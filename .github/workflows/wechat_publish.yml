@@ -6,6 +6,11 @@ on:
     # Run every 4 hours automatically to process the queue in chunks
     - cron: '0 */4 * * *'
 
+# 并发控制：如果上一个任务还在跑，新触发的任务会乖乖排队，绝对不抢占或覆盖
+concurrency:
+  group: "wechat-publish-queue"
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
