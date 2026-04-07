@@ -125,10 +125,10 @@ class WeChatPublisher:
                 for retry_idx in range(9999):
                     result = await self._do_schedule_publish(page, publish_time)
                     if not result.get("success") and result.get("retry_full_flow"):
-                        logger.warning(f"  [Auto-Retry] 捕获到弹窗异常消失标志(系统繁忙)，等待 15 分钟后进行第 {retry_idx + 1} 次完整重试流程...")
-                        await asyncio.sleep(900)
+                        logger.warning(f"  [Auto-Retry] 捕获到弹窗异常消失标志(系统繁忙)，等待 1 小时后进行第 {retry_idx + 1} 次完整重试流程...")
+                        await asyncio.sleep(3600)
                         if "appmsg_edit" not in page.url:
-                            logger.info("  ⭐ [静默成功] 发现页面在 15 分钟休眠期间已成功跳转，确认为延迟发表成功，免去重试！")
+                            logger.info("  ⭐ [静默成功] 发现页面在 1 小时休眠期间已成功跳转，确认为延迟发表成功，免去重试！")
                             result = {"success": True, "message": "休眠期间跳转成功", "screenshot_path": ""}
                             break
                         continue
