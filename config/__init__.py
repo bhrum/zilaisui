@@ -153,6 +153,14 @@ __all__ = [
     "get_environment_variable",
     "get_boolean_env",
     "get_int_env",
+    # WeChat Publisher Settings
+    "WECHAT_ENABLED",
+    "WECHAT_PUBLISH_MODE",
+    "WECHAT_DEFAULT_AUTHOR",
+    "WECHAT_AUTH_STATE_PATH",
+    "WECHAT_MIN_DELAY",
+    "WECHAT_MAX_DELAY",
+    "WECHAT_HEADLESS",
     # Global State
     "GlobalState",
 ]

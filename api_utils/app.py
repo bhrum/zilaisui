@@ -350,6 +350,12 @@ async def lifespan(app: FastAPI):
         try:
             await _shutdown_resources()
         finally:
+            # Shutdown WeChat browser if running
+            try:
+                from wechat_publisher import shutdown_wechat_browser
+                await shutdown_wechat_browser()
+            except Exception:
+                pass
             restore_original_streams(initial_stdout, initial_stderr)
             restore_original_streams(*original_streams)
             logger.info("Server shut down.")
@@ -447,6 +453,10 @@ def create_app() -> FastAPI:
 
     app.include_router(server_router)
     app.include_router(helper_router)
+
+    from api_utils.routers import wechat_router
+    app.include_router(wechat_router)
+
     app.get("/api/keys")(get_api_keys)
     app.post("/api/keys")(add_api_key)
     app.post("/api/keys/test")(test_api_key)

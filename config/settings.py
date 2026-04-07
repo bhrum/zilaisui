@@ -207,3 +207,14 @@ COOKIE_REFRESH_REQUEST_INTERVAL = get_int_env("COOKIE_REFRESH_REQUEST_INTERVAL",
 
 # Enable cookie save on graceful shutdown
 COOKIE_REFRESH_ON_SHUTDOWN = get_boolean_env("COOKIE_REFRESH_ON_SHUTDOWN", True)
+
+# --- WeChat Official Account (微信公众号) Configuration ---
+WECHAT_ENABLED = get_boolean_env("WECHAT_ENABLED", False)
+WECHAT_PUBLISH_MODE = os.environ.get("WECHAT_PUBLISH_MODE", "draft").lower()
+WECHAT_DEFAULT_AUTHOR = os.environ.get("WECHAT_DEFAULT_AUTHOR", "AI Studio")
+WECHAT_AUTH_STATE_PATH = os.environ.get(
+    "WECHAT_AUTH_STATE_PATH", str(_PROJECT_ROOT / "wechat_auth" / "state.json")
+)
+WECHAT_MIN_DELAY = float(os.environ.get("WECHAT_MIN_DELAY", "1.0"))
+WECHAT_MAX_DELAY = float(os.environ.get("WECHAT_MAX_DELAY", "3.0"))
+WECHAT_HEADLESS = get_boolean_env("WECHAT_HEADLESS", True)
