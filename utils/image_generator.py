@@ -35,10 +35,19 @@ def generate_cover_image(title: str, output_dir: str = "sucai/covers", filename:
     draw = ImageDraw.Draw(img)
     
     # Find a suitable font
-    font_path = r"C:\Windows\Fonts\msyh.ttc"  # Windows Microsoft YaHei
-    if not os.path.exists(font_path):
-        # Fallback to general
-        font_path = "arial.ttf" 
+    font_paths = [
+        r"C:\Windows\Fonts\msyh.ttc",  # Windows Microsoft YaHei
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", # Ubuntu Noto CJK
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", # Ubuntu WenQuanYi
+        "arial.ttf" # Fallback
+    ]
+    
+    font_path = "arial.ttf"
+    for p in font_paths:
+        if os.path.exists(p):
+            font_path = p
+            break
+
         
     # Dynamically scale font size based on title length
     # A base font size of 50 is good for about 15-20 characters

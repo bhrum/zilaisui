@@ -1,0 +1,56 @@
+name: WeChat Batch Publish
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run every 4 hours automatically to process the queue in chunks
+    - cron: '0 */4 * * *'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to commit the modified CSV back to the repo
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          # Install Noto CJK fonts for image generation (cover images)
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk
+          
+          # Install Poetry
+          pip install poetry
+          
+          # Install project dependencies
+          poetry install
+
+      - name: Install Playwright Browsers
+        run: poetry run playwright install chromium
+
+      - name: Run WeChat Publisher
+        env:
+          WECHAT_AUTH_STATE_JSON: ${{ secrets.WECHAT_AUTH_STATE_JSON }}
+          WECHAT_HEADLESS: "true"
+          MAX_PUBLISH_COUNT: "50"
+          CSV_FILE_PATH: "sucai/梵文陀罗尼音译结果(全部) (3).csv"
+        run: |
+          # Run the batch scheduled publishing script
+          poetry run python publish_batch_scheduled.py
+
+      - name: Commit and push updated CSV
+        if: always() # Make sure to commit even if the script failed halfway
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add "sucai"
+          # Only commit if there are changes
+          git diff --staged --quiet || (git commit -m "chore: update publish status via GitHub Actions" && git push)

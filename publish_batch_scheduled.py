@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import csv
+import subprocess
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -39,7 +40,8 @@ def round_time_to_next_5_minutes(dt: datetime) -> datetime:
 async def main():
     print("=== 开始 断点续传+定时发表 批量任务 ===")
     
-    csv_path = r"e:\自动化\AIstudioProxyAPI\sucai\梵文陀罗尼音译结果(全部) (3).csv"
+    csv_path = os.environ.get("CSV_FILE_PATH", "sucai/梵文陀罗尼音译结果(全部) (3).csv")
+    csv_path = os.path.abspath(csv_path)
     if not os.path.exists(csv_path):
         print(f"[FAIL] 找不到CSV文件: {csv_path}")
         return
@@ -99,7 +101,16 @@ async def main():
 
     print(f"首条预定发表时间: {pending_articles[0][1]['__calculated_time'].strftime('%Y-%m-%d %H:%M')}")
     print(f"末条预定发表时间: {pending_articles[-1][1]['__calculated_time'].strftime('%Y-%m-%d %H:%M')}")
-    print("\n2. 启动浏览器环境...")
+    print("\n2. 初始化环境...")
+    
+    # 支持从环境变量恢复微信登录状态（供GitHub Actions使用）
+    wechat_auth_json = os.environ.get("WECHAT_AUTH_STATE_JSON")
+    if wechat_auth_json:
+        from config.settings import WECHAT_AUTH_STATE_PATH
+        print(f"检测到 WECHAT_AUTH_STATE_JSON 环境变量，正在恢复凭证到: {WECHAT_AUTH_STATE_PATH}")
+        os.makedirs(os.path.dirname(WECHAT_AUTH_STATE_PATH), exist_ok=True)
+        with open(WECHAT_AUTH_STATE_PATH, 'w', encoding='utf-8') as f:
+            f.write(wechat_auth_json)
 
     browser = get_wechat_browser()
     launched = await browser.launch(headless=False)
@@ -159,6 +170,21 @@ async def main():
                     # Remove temporary internal keys before writing
                     clean_row = {k: v for k, v in a.items() if not k.startswith('__')}
                     writer.writerow(clean_row)
+                    
+            # 在 GitHub Actions 中，立即将进度推送回仓库，防止 6 小时超时后状态丢失
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                try:
+                    subprocess.run(["git", "config", "--global", "user.name", "github-actions[bot]"], check=True, capture_output=True)
+                    subprocess.run(["git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True, capture_output=True)
+                    subprocess.run(["git", "add", csv_path], check=True, capture_output=True)
+                    # Use a dynamic message so we commit on every single success
+                    commit_msg = f"chore: scheduled '{title}' successfully"
+                    # Exit status will be 1 if there's nothing to commit, which shouldn't happen, but we can allow it
+                    subprocess.run(["git", "commit", "-m", commit_msg], capture_output=True)
+                    subprocess.run(["git", "push"], check=True, capture_output=True)
+                    print("  📦 进度已实时同步至 GitHub 仓库")
+                except Exception as e:
+                    print(f"  ⚠️ GitHub 进度同步失败: {e}")
         else:
             print(f"  ❌ 失败: {result.get('message')}")
             fail_count += 1
@@ -178,6 +204,12 @@ async def main():
             
         print("-" * 50)
         await asyncio.sleep(5)
+        
+        # 限制单次执行最大发表数，防止平台超时
+        max_publish_count = int(os.environ.get("MAX_PUBLISH_COUNT", "0"))
+        if max_publish_count > 0 and success_count >= max_publish_count:
+            print(f"\n✋ 已达到单次执行上限 (MAX_PUBLISH_COUNT={max_publish_count})，提前结束以供下次重新调度。")
+            break
         
     print(f"\n=== 批量操作结束 ===")
     print(f"本次运行: 剩余待处理 {len(pending_articles)}, 成功: {success_count}, 失败: {fail_count}")
