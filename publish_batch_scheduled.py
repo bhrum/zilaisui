@@ -12,7 +12,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 # 加载配置
 load_dotenv()
 os.environ["WECHAT_ENABLED"] = "true"
-os.environ["WECHAT_HEADLESS"] = "false"  # 强制显示浏览器，保证需要扫码时可见
+if "WECHAT_HEADLESS" not in os.environ:
+    os.environ["WECHAT_HEADLESS"] = "false"  # 强制显示浏览器，保证需要扫码时可见
 os.environ["WECHAT_MIN_DELAY"] = "2.0"
 os.environ["WECHAT_MAX_DELAY"] = "4.0"
 
@@ -113,7 +114,8 @@ async def main():
             f.write(wechat_auth_json)
 
     browser = get_wechat_browser()
-    launched = await browser.launch(headless=False)
+    is_headless = os.environ.get("WECHAT_HEADLESS", "false").lower() == "true"
+    launched = await browser.launch(headless=is_headless)
     if not launched:
         print("[FAIL] 浏览器启动失败")
         return
