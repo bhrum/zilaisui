@@ -3,6 +3,7 @@ import os
 import sys
 import csv
 import subprocess
+import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -39,6 +40,7 @@ def round_time_to_next_5_minutes(dt: datetime) -> datetime:
     return dt
 
 async def main():
+    script_start_time = time.time()
     print("=== 开始 断点续传+定时发表 批量任务 ===")
     
     csv_path = os.environ.get("CSV_FILE_PATH", "sucai/梵文陀罗尼音译结果(全部) (3).csv")
@@ -178,13 +180,21 @@ async def main():
                 try:
                     subprocess.run(["git", "config", "--global", "user.name", "github-actions[bot]"], check=True, capture_output=True)
                     subprocess.run(["git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True, capture_output=True)
+                    
+                    # 先拉取最新代码，防止冲突
+                    subprocess.run(["git", "pull", "--rebase", "origin", "main"], capture_output=True)
+                    
                     subprocess.run(["git", "add", csv_path], check=True, capture_output=True)
                     # Use a dynamic message so we commit on every single success
                     commit_msg = f"chore: scheduled '{title}' successfully"
                     # Exit status will be 1 if there's nothing to commit, which shouldn't happen, but we can allow it
                     subprocess.run(["git", "commit", "-m", commit_msg], capture_output=True)
-                    subprocess.run(["git", "push"], check=True, capture_output=True)
+                    
+                    # 推送当前 HEAD 到 origin/main，解决 detached HEAD 问题
+                    subprocess.run(["git", "push", "origin", "HEAD:main"], check=True, capture_output=True, text=True)
                     print("  📦 进度已实时同步至 GitHub 仓库")
+                except subprocess.CalledProcessError as e:
+                    print(f"  ⚠️ GitHub 进度同步失败 (退出码 {e.returncode}): {e.stderr.strip()}")
                 except Exception as e:
                     print(f"  ⚠️ GitHub 进度同步失败: {e}")
         else:
@@ -212,6 +222,11 @@ async def main():
         if max_publish_count > 0 and success_count >= max_publish_count:
             print(f"\n✋ 已达到单次执行上限 (MAX_PUBLISH_COUNT={max_publish_count})，提前结束以供下次重新调度。")
             break
+            
+        # 限制单次执行时间，最大5小时
+        if time.time() - script_start_time > 5 * 3600:
+            print("\n✋ 运行时间已达到 5 小时，提前结束当前Action任务。")
+            break
         
     print(f"\n=== 批量操作结束 ===")
     print(f"本次运行: 剩余待处理 {len(pending_articles)}, 成功: {success_count}, 失败: {fail_count}")
@@ -219,6 +234,24 @@ async def main():
     print("\n等待 15 秒后关闭浏览器...")
     await asyncio.sleep(15)
     await browser.close()
+    
+    # 检查是否还有剩余任务，并且没有发生由于报错导致的中断
+    if fail_count == 0:
+        remaining = 0
+        with open(csv_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if not row.get('发布状态', '').startswith('已定时发表'):
+                    remaining += 1
+        
+        if remaining > 0:
+            print(f"\n🚀 还有 {remaining} 条待发任务，通过 GITHUB_OUTPUT 标记触发下一次执行...")
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                    f.write("trigger_next=true\n")
+        else:
+            print("\n🎉 所有任务已全部完成！无需再次触发。")
+            
     print("程序已完全退出。")
 
 if __name__ == "__main__":

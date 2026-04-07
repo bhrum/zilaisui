@@ -6,16 +6,12 @@ on:
     # Run every 4 hours automatically to process the queue in chunks
     - cron: '0 */4 * * *'
 
-# 并发控制：如果上一个任务还在跑，新触发的任务会乖乖排队，绝对不抢占或覆盖
-concurrency:
-  group: "wechat-publish-queue"
-  cancel-in-progress: false
-
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
       contents: write # Needed to commit the modified CSV back to the repo
+      actions: write  # Needed to trigger next workflow
 
     steps:
       - name: Checkout repository
@@ -42,6 +38,7 @@ jobs:
         run: poetry run playwright install chromium
 
       - name: Run WeChat Publisher
+        id: publisher
         env:
           WECHAT_AUTH_STATE_JSON: ${{ secrets.WECHAT_AUTH_STATE_JSON }}
           WECHAT_HEADLESS: "true"
@@ -58,4 +55,15 @@ jobs:
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add "sucai"
           # Only commit if there are changes
-          git diff --staged --quiet || (git commit -m "chore: update publish status via GitHub Actions" && git push)
+          git diff --staged --quiet || git commit -m "chore: update publish status via GitHub Actions"
+          
+          # Always try to push, because the Python script might have committed locally without pushing successfully due to errors
+          git push origin HEAD:main || echo "Push failed (maybe nothing to push or permission error)"
+
+      - name: Trigger next action
+        if: steps.publisher.outputs.trigger_next == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Tasks are not fully completed yet. Automatically triggering the next action loop..."
+          gh workflow run wechat_publish.yml
