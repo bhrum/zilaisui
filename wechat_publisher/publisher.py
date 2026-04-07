@@ -1643,19 +1643,20 @@ class WeChatPublisher:
                 }
                 
                 function recordToast(source, el, text) {
-                    const r = el.getBoundingClientRect ? el.getBoundingClientRect() : {};
-                    const s = el.nodeType === 1 ? window.getComputedStyle(el) : {};
-                    window.__wechat_toasts.push({
-                        time: Date.now(),
-                        source: source,
-                        text: text.substring(0, 500),
-                        path: getElementPath(el),
-                        rect: {x: Math.round(r.x||0), y: Math.round(r.y||0), w: Math.round(r.width||0), h: Math.round(r.height||0)},
-                        display: s.display || '',
-                        visibility: s.visibility || '',
-                        opacity: s.opacity || '',
-                    });
-                }
+                        const s = el.nodeType === 1 ? window.getComputedStyle(el) : {};
+                        const toastData = {
+                            time: Date.now(),
+                            source: source,
+                            text: text.substring(0, 500),
+                            path: getElementPath(el),
+                            rect: {x: Math.round(r.x||0), y: Math.round(r.y||0), w: Math.round(r.width||0), h: Math.round(r.height||0)},
+                            display: s.display || '',
+                            visibility: s.visibility || '',
+                            opacity: s.opacity || '',
+                        };
+                        window.__wechat_toasts.push(toastData);
+                        console.log("WECHAT_TOAST_REALTIME: " + text); // 实时发送给 Python，防止页面跳出时来不及抓取
+                    }
                 
                 if (window.__wechat_toast_observer) {
                     window.__wechat_toast_observer.disconnect();
@@ -1771,6 +1772,19 @@ class WeChatPublisher:
                     "active_scan_signals": [],
                 }
                 
+                # Setup realtime toast capture for this attempt
+                realtime_toast_result = {"status": None}
+                def on_console(msg):
+                    if msg.text.startswith("WECHAT_TOAST_REALTIME: "):
+                        txt = msg.text[23:]
+                        if any(kw in txt for kw in ['成功', '定时']) and '失败' not in txt:
+                            realtime_toast_result["status"] = "success"
+                            logger.info(f"  [RealtimeToast] 立即捕获到成功信号: {txt[:100]}")
+                        elif any(kw in txt for kw in ['繁忙', '频繁', '操作太快', '请稍后', '超时']):
+                            realtime_toast_result["status"] = "busy"
+                            logger.warning(f"  [RealtimeToast] 立即捕获到繁忙信号: {txt[:100]}")
+                page.on("console", on_console)
+                
                 logger.info(f"  [Step6] 点击弹窗内发表按钮... (提交尝试 {submit_attempt+1})")
                 
                 net_baseline = len(session_timeline["network_events"])
@@ -1799,10 +1813,13 @@ class WeChatPublisher:
                     else:
                         attempt_info["click_result"] = "clicked"
                 except Exception as e:
-                    if "Execution context" in str(e) or "navigation" in str(e).lower() or "Target closed" in str(e):
+                    if "Execution context" in str(e) or "navigation" in str(e).lower():
                         logger.info("  ⭐ [修正] 点击发表时页面直接导航销毁，视为发表成功！")
                         detected_result = "success"
                         break
+                    elif "Target closed" in str(e):
+                        logger.error("  ❌ 页面被手动关闭或程序终止！")
+                        raise e
                     logger.error(f"  [Step6] 点击发表失败: {e}")
                     attempt_info["click_result"] = f"error: {e}"
                 
@@ -1854,17 +1871,16 @@ class WeChatPublisher:
                             if ret_code in [-1, 154011, 154009, 154008]:
                                 detected_result = "busy"
                                 attempt_info["network_signals"].append({"url": url, "signal": f"ret_{ret_code}", "err_msg": err_msg[:200]})
-                                break
                             else:
                                 attempt_info["network_signals"].append({"url": url, "signal": f"ret_{ret_code}", "err_msg": err_msg[:200]})
                                 # For other non-zero codes, we might also consider them failures if they happen on publish endpoints
                                 if any(kw in url for kw in ["appmsg", "masssend", "freepublish", "operate", "timer"]):
                                     detected_result = "busy"
-                                    break
                         
                         # Record success but DO NOT BREAK immediately! We must ensure no other failures exist in this batch
                         if ret_code == 0 and any(kw in url for kw in ["appmsg", "masssend", "freepublish", "operate", "timer"]):
                             has_success = True
+                            detected_result = "success"  # Explicitly override busy if we later see a strict success in the same batch
                             attempt_info["network_signals"].append({"url": url, "signal": "success", "ret": 0})
                     
                     if detected_result:
@@ -1879,10 +1895,17 @@ class WeChatPublisher:
                     try:
                         toasts = await page.evaluate('() => window.__wechat_toasts ? window.__wechat_toasts : []')
                     except Exception as e:
-                        if "Execution context" in str(e) or "navigation" in str(e).lower() or "Target closed" in str(e):
-                            logger.info("  ⭐ [修正] 轮询 Toast 时遭遇页面导航销毁，确认为已跳出编辑页（大概率发表成功）！")
-                            detected_result = "success"
+                        if "Execution context" in str(e) or "navigation" in str(e).lower():
+                            logger.warning("  ⚠️ 轮询 Toast 时遭遇页面销毁。将通过实时日志或网络响应判定结果...")
+                            # Fallback check
+                            if realtime_toast_result["status"] == "success":
+                                detected_result = "success"
+                            elif realtime_toast_result["status"] == "busy":
+                                detected_result = "busy"
                             break
+                        elif "Target closed" in str(e):
+                            logger.error("  ❌ 页面被手动关闭或程序终止！")
+                            raise e
                         raise e
                     new_toasts = toasts[toast_baseline_js:]
                     
@@ -1936,10 +1959,16 @@ class WeChatPublisher:
                             return results;
                         }''')
                     except Exception as e:
-                        if "Execution context" in str(e) or "navigation" in str(e).lower() or "Target closed" in str(e):
-                            logger.info("  ⭐ [修正] 扫描弹窗元素时发现页面导航销毁，确认为发表成功页面跳转！")
-                            detected_result = "success"
+                        if "Execution context" in str(e) or "navigation" in str(e).lower():
+                            logger.warning("  ⚠️ 扫描弹窗时遭遇页面销毁。将通过实时日志或网络响应判定结果...")
+                            if realtime_toast_result["status"] == "success":
+                                detected_result = "success"
+                            elif realtime_toast_result["status"] == "busy":
+                                detected_result = "busy"
                             break
+                        elif "Target closed" in str(e):
+                            logger.error("  ❌ 页面被手动关闭或程序终止！")
+                            raise e
                         raise e
                     
                     if active_scan:
@@ -1950,7 +1979,7 @@ class WeChatPublisher:
                                 detected_result = "busy"
                                 logger.warning(f"  [ActiveScan] 捕获到繁忙: {txt[:100]}")
                                 break
-                            if '成功' in txt and '失败' not in txt and '定时' in txt:
+                            if any(kw in txt for kw in ['成功', '定时']) and '失败' not in txt:
                                 detected_result = "success"
                                 logger.info(f"  [ActiveScan] 捕获到成功: {txt[:100]}")
                                 break
@@ -1994,10 +2023,13 @@ class WeChatPublisher:
                                 return false;
                             }''')
                         except Exception as e:
-                            if "Execution context" in str(e) or "navigation" in str(e).lower() or "Target closed" in str(e):
+                            if "Execution context" in str(e) or "navigation" in str(e).lower():
                                 logger.warning(f"  ⭐ [修正] 检查弹窗时发现页面正在跳转中 ({str(e).splitlines()[0]})，确认为真实发表成功！")
                                 detected_result = "success"
                                 has_dialog = False
+                            elif "Target closed" in str(e):
+                                logger.error("  ❌ 页面被手动关闭或程序终止！")
+                                raise e
                             else:
                                 raise e
                         
@@ -2006,17 +2038,22 @@ class WeChatPublisher:
                             for _ in range(5):
                                 await asyncio.sleep(2)
                                 if "appmsg_edit" not in page.url:
-                                    logger.warning(f"  ⭐ [修正] 页面发生延迟跳转 (URL: {page.url[-40:]})，确认为真实发表成功！")
+                                    logger.warning(f"  ⭐ [修正] 页面发生延迟跳转 (URL: {page.url[-40:]})，结合可能隐藏的真正成功状态，确认为发表成功！")
                                     detected_result = "success"
                                     break
                             
                             if detected_result != "success":
                                 logger.warning("  ⚠️ 系统繁忙导致发表弹窗被强制关闭，需从头拉起发表流程...")
+                                page.remove_listener("console", on_console)
                                 return {"success": False, "retry_full_flow": True, "message": "busy_dialog_closed"}
-                        logger.warning("  ⚠️ 监听到系统繁忙(三重检测确认)，等待 30 秒后重试提交...")
-                        await _take_session_screenshot(f"attempt{submit_attempt+1}_busy_waiting")
-                        await asyncio.sleep(30)
-                        continue
+                        
+                        if detected_result == "success":
+                            pass # Escaped the busy trap, let the success handler block below catch it
+                        else:
+                            logger.warning("  ⚠️ 监听到系统繁忙(三重检测确认)，等待 30 秒后重试提交...")
+                            await _take_session_screenshot(f"attempt{submit_attempt+1}_busy_waiting")
+                            await asyncio.sleep(30)
+                            continue
                 
                 if detected_result == "success":
                     logger.info("  ✅ 监听到发表成功信号（三重检测确认）！")
@@ -2059,15 +2096,24 @@ class WeChatPublisher:
                     
                     if has_failure_signal:
                         logger.warning("  ⚠️ 兜底检查确认页面虽不可识别，但仍有失败信号，等待 30 秒后重试...")
+                        page.remove_listener("console", on_console)
                         await asyncio.sleep(30)
                         continue
                     
-                    logger.info("✅ 定时发表成功 (兜底判断：页面跳转 + 无失败/繁忙信号)！")
-                    _save_session_log()
-                    return {"success": True, "message": "已成功提交定时发表任务",
-                            "screenshot_path": state8['screenshot'],
-                            "session_dir": session_dir}
+                    if realtime_toast_result["status"] == "success" or has_success:
+                        logger.info("✅ 定时发表成功 (已捕获明确的成功弹窗或网络状态)！")
+                        _save_session_log()
+                        page.remove_listener("console", on_console)
+                        return {"success": True, "message": "已成功提交定时发表任务",
+                                "screenshot_path": state8['screenshot'],
+                                "session_dir": session_dir}
+                    else:
+                        logger.error("  ❌ 页面已跳转，但未捕捉到任何明确的成功信号。判定为发表中断或未能成功。")
+                        _save_session_log()
+                        page.remove_listener("console", on_console)
+                        return {"success": False, "retry_full_flow": True, "message": "页面跳转但未收到发表成功的明确信号", "screenshot_path": state8['screenshot'], "session_dir": session_dir}
                 
+                page.remove_listener("console", on_console)
                 # If we are here, we are still on the editor page, and it didn't succeed.
                 if not state8['dialogs']:
                     err_msg = "发表弹窗已消失，但页面未能跳转完毕。疑似发表步骤异常中断。"
@@ -2093,17 +2139,30 @@ class WeChatPublisher:
                 await page.evaluate('() => { if (window.__wechat_toast_scanner) clearInterval(window.__wechat_toast_scanner); }')
             except Exception:
                 pass
+            try:
+                page.remove_listener("console", on_console)
+            except Exception:
+                pass
 
         except Exception as e:
             err_str = str(e)
-            if "Execution context was destroyed" in err_str or "navigation" in err_str.lower() or "Target closed" in err_str:
-                logger.info("  ✅ 捕获到页面导航导致的上下文销毁，此现象通常代表发表动作成功、页面已跳转回列表！判定为成功。")
-                try:
-                    if "session_dir" in locals():
-                        _save_session_log()
-                except Exception:
-                    pass
-                return {"success": True, "message": "已成功提交任务(凭据: 页面成功跳转)", "session_dir": locals().get("session_dir", "")}
+            if "Target closed" in err_str:
+                logger.error("❌ 浏览器被手动关闭或程序中断，发布中止。")
+                return {"success": False, "message": "程序因中断或浏览器关闭而终止"}
+                
+            if "Execution context was destroyed" in err_str or "navigation" in err_str.lower():
+                # Strictly check if we had a realtime success signal!
+                if realtime_toast_result.get("status") == "success":
+                    logger.info("  ✅ 页面上下文已被销毁，但先前已成功捕获发出成功的弹窗，安全判定为成功！")
+                    try:
+                        if "session_dir" in locals():
+                            _save_session_log()
+                    except Exception:
+                        pass
+                    return {"success": True, "message": "已成功提交任务(捕获到成功弹窗)", "session_dir": locals().get("session_dir", "")}
+                else:
+                    logger.warning("  ⚠️ 页面导航中断，且未能捕捉到任何成功弹窗。安全起见判定为未成功发表！")
+                    return {"success": False, "retry_full_flow": True, "message": "页面异常跳转或强行刷新"}
 
             logger.error(f"❌ Schedule Publish error: {err_str}")
             try:
