@@ -2,9 +2,6 @@ name: WeChat Batch Publish
 
 on:
   workflow_dispatch:
-  schedule:
-    # Run every 4 hours automatically to process the queue in chunks
-    - cron: '0 */4 * * *'
 
 jobs:
   publish:
