@@ -1,209 +1,312 @@
-# AI Studio Proxy API
+# 🤖 AIstudioProxyAPI + 微信公众号自动化发布矩阵
 
-将 Google AI Studio 网页界面转换为 OpenAI 兼容 API 的代理服务。通过 Camoufox + Playwright 自动化，提供稳定可控的 API 访问。
-
-[![Star History Chart](https://api.star-history.com/svg?repos=CJackHwang/AIstudioProxyAPI&type=Date)](https://www.star-history.com/#CJackHwang/AIstudioProxyAPI&Date)
+> 基于 [AIstudioProxyAPI](https://github.com/CJackHwang/AIstudioProxyAPI) 的增强分支：在原有 AI Studio → OpenAI API 代理能力之上，集成了 **AI 自动创作** + **微信公众号全自动发布矩阵**，实现从内容生成到多账号定时发布的完整闭环。
 
 ---
 
-## 主要特性
+## 📌 项目定位
 
-- **OpenAI 兼容 API**：支持 `/v1/chat/completions`、`/v1/models`
-- **函数调用三模式**：`auto` / `native` / `emulated`，支持失败回退
-- **认证轮转与 Cookie 刷新**：支持 profile 自动轮转、周期刷新与关停保存
-- **启动链路完整**：CLI 启动器、内置 Web UI、桌面 GUI 启动器
-- **现代化前端**：内置设置页、状态检查与日志能力
-- **CI/CD 工作流**：PR 检查、Release、Upstream Sync
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        本项目 = 两大能力                         │
+│                                                                 │
+│  ① AI Studio Proxy API（上游能力）                               │
+│     将 Google AI Studio 网页转为 OpenAI 兼容 API                  │
+│                                                                 │
+│  ② 微信公众号自动化矩阵（本分支扩展）                              │
+│     AI 创作文章 → 自动发布 → 多账号并行 → CI/CD 全自动             │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-## 系统要求
+---
 
-| 组件 | 要求 | 推荐 |
-| --- | --- | --- |
-| Python | >=3.9, <4.0 | 3.10+ / 3.11+ |
-| 依赖管理 | Poetry | 最新版本 |
-| Node.js | 前端构建需要 | LTS |
-| 内存 | >=2GB | >=4GB |
+## 🏗️ 系统架构
+
+```mermaid
+flowchart TB
+    subgraph secrets ["🔐 GitHub Secrets"]
+        S1["GEMINI_API_KEY"]
+        S2["CPA_API_KEY"]
+        S3["WECHAT_AUTH_STATE_JSON_ACC_*"]
+        S4["GH_PAT"]
+    end
+
+    subgraph ci ["⚙️ GitHub Actions Runner"]
+        direction TB
+        CPA["CLIProxyAPI<br/>Go 代理服务 :8317"]
+        GEN["article_generator.py<br/>AI 文章生成"]
+        PUB["WeChatPublisher<br/>Playwright 自动化"]
+    end
+
+    subgraph external ["🌐 外部服务"]
+        LLM["Gemini / Claude / GPT"]
+        WX["mp.weixin.qq.com<br/>微信公众号后台"]
+    end
+
+    secrets --> ci
+    CPA <--> LLM
+    GEN --> CPA
+    GEN --> PUB
+    PUB --> WX
+```
+
+---
+
+## 📂 目录结构
+
+```
+AIstudioProxyAPI/
+│
+├── 🔧 上游 Proxy 核心
+│   ├── api_utils/              # FastAPI 路由与 API 处理
+│   ├── browser_utils/          # Playwright 页面控制
+│   ├── stream/                 # 流式代理转发
+│   ├── config/                 # 运行时配置 (settings.py)
+│   ├── models/                 # 数据模型定义
+│   ├── launcher/               # 启动器逻辑
+│   ├── server.py               # FastAPI 入口
+│   └── launch_camoufox.py      # Camoufox 启动脚本
+│
+├── 📝 微信公众号发布引擎
+│   ├── wechat_publisher/
+│   │   ├── browser.py          # 微信浏览器管理 (Camoufox)
+│   │   ├── publisher.py        # 核心发布逻辑 (8 阶段流程)
+│   │   ├── content_formatter.py # Markdown → 微信 HTML
+│   │   ├── selectors.py        # 微信后台 CSS 选择器库
+│   │   └── models.py           # 请求/响应数据模型
+│   │
+│   └── utils/
+│       └── image_generator.py  # 文章封面图自动生成 (900×383)
+│
+├── 🤖 AI 创作 + 自动化脚本
+│   └── scripts/wechat/
+│       ├── article_generator.py     # AI 文章生成器 (OpenAI SDK)
+│       ├── setup_cliproxy.py        # CLIProxyAPI 服务管理器
+│       ├── publish_ai_articles.py   # AI 创作+发布 全流水线
+│       ├── publish_batch_scheduled.py # CSV 批量定时发布
+│       ├── matrix_auth.py           # 多账号凭证管理 + Secrets 同步
+│       └── probe_publish_modal.py   # 发布弹窗探测工具
+│
+├── 🔄 CI/CD 工作流
+│   └── .github/workflows/
+│       ├── wechat_ai_publish.yml    # AI 创作+发布 (手动触发)
+│       ├── wechat_publish.yml       # CSV 批量发布 (手动触发)
+│       ├── pr-check.yml             # PR 自动检查
+│       ├── release.yml              # 版本发布
+│       └── upstream-sync.yml        # 上游同步
+│
+├── 📦 CLIProxyAPI/             # AI 代理服务 (Go, git clone)
+├── sucai/                      # 素材目录 (按账号隔离)
+├── pyproject.toml              # Poetry 依赖管理
+└── .env.example                # 环境变量模板
+```
 
 ---
 
 ## 🚀 快速开始
 
-### 1. 克隆并安装
+### 前置要求
+
+| 组件 | 版本 | 用途 |
+|------|------|------|
+| Python | ≥3.9 | 运行所有脚本 |
+| Poetry | 最新 | 依赖管理 |
+| GitHub CLI (`gh`) | 最新 | Secrets 同步 |
+| Gemini API Key | 免费 | AI 文章生成 ([获取](https://aistudio.google.com/apikey)) |
+
+### 1️⃣ 安装依赖
 
 ```bash
-git clone https://github.com/CJackHwang/AIstudioProxyAPI.git
-cd AIstudioProxyAPI
-poetry install --with dev
+git clone https://github.com/bhrum/zilaisui.git
+cd zilaisui
+poetry install
+poetry run playwright install chromium
 ```
 
-### 2. 配置环境
+### 2️⃣ 配置凭证（一键交互式）
 
 ```bash
-cp .env.example .env
+poetry run python scripts/wechat/matrix_auth.py
 ```
 
-建议先确认：`PORT`、`STREAM_PORT`、`UNIFIED_PROXY_CONFIG`、`LAUNCH_MODE`、`FUNCTION_CALLING_MODE`。
+选择菜单：
+- **选项 1** → 扫码添加微信公众号（自动提取登录态 → 同步到 GitHub Secrets）
+- **选项 2** → 配置 AI 引擎凭证（Gemini API Key + CLIProxyAPI）
+- **选项 3** → 全部设置
 
-### 3. 首次认证并启动
+### 3️⃣ 提供创作主题
+
+```yaml
+# sucai/<你的账号名>/topics.yaml
+topics:
+  - 人工智能如何改变日常生活
+  - 深度学习入门：从零到一
+  - 2026年最值得关注的科技趋势
+```
+
+### 4️⃣ 运行
 
 ```bash
-# 首次建议 debug，完成登录并保存 auth
-poetry run python launch_camoufox.py --debug
+# 仅测试 AI 文章生成（不发布）
+poetry run python scripts/wechat/article_generator.py "你的主题"
 
-# 日常建议 headless
-poetry run python launch_camoufox.py --headless
+# 完整流程：AI 创作 → 生成封面 → 定时发布到微信
+poetry run python scripts/wechat/publish_ai_articles.py
+
+# CSV 批量发布（使用预写好的文章）
+poetry run python scripts/wechat/publish_batch_scheduled.py
 ```
 
-### 快速测试
-
-```bash
-# 健康检查
-curl http://127.0.0.1:2048/health
-
-# 模型列表
-curl http://127.0.0.1:2048/v1/models
-
-# 聊天请求
-curl -X POST http://127.0.0.1:2048/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"你好"}]}'
-```
-
-访问 `http://127.0.0.1:2048/` 使用内置 Web UI。
+或通过 **GitHub Actions** 一键触发：`Actions` → `WeChat AI Article Publish` → `Run workflow`
 
 ---
 
-## 系统架构
+## 📋 两种发布模式对比
 
-```mermaid
-graph TD
-    subgraph "用户端"
-        User["用户"]
-        WebUI["Web UI"]
-        APIClient["API 客户端"]
-    end
+| 特性 | AI 自动创作模式 | CSV 批量发布模式 |
+|------|:--------------:|:--------------:|
+| 入口脚本 | `publish_ai_articles.py` | `publish_batch_scheduled.py` |
+| 内容来源 | AI 实时生成 (Gemini/Claude) | CSV 预写好的 Markdown |
+| 封面图 | 自动生成 | CSV 指定路径 |
+| 定时策略 | 自动均匀分布 (一周内) | CSV 中指定时间 |
+| CI Workflow | `wechat_ai_publish.yml` | `wechat_publish.yml` |
+| 适用场景 | 大批量内容矩阵运营 | 精品内容精确定时发布 |
 
-    subgraph "启动与配置"
-        Launcher["launch_camoufox.py"]
-        Env[".env 配置"]
-    end
+---
 
-    subgraph "核心服务"
-        FastAPI["FastAPI 应用<br/>api_utils/"]
-        BrowserOps["页面控制与自动化<br/>browser_utils/"]
-        StreamProxy["流式代理<br/>stream/"]
-    end
+## 🔐 GitHub Secrets 一览
 
-    subgraph "外部依赖"
-        Camoufox["Camoufox 浏览器"]
-        AIStudio["Google AI Studio"]
-    end
+| Secret 名称 | 用途 | 必须 |
+|---|---|:---:|
+| `WECHAT_AUTH_STATE_JSON_ACC_*` | 微信公众号登录态 (每个账号一个) | ✅ |
+| `GH_PAT` | GitHub Personal Access Token (工作流接力触发) | ✅ |
+| `GEMINI_API_KEY` | Google Gemini API Key (AI 创作) | 🤖 |
+| `CPA_API_KEY` | CLIProxyAPI 访问密钥 (自定义) | 🤖 |
+| `AI_ARTICLE_TOPICS` | JSON 主题列表 (可选, 优先级最高) | ⚡ |
+| `AI_SYSTEM_PROMPT` | 自定义 AI 写作风格提示词 | ⚡ |
 
-    User --> Launcher
-    Launcher --> Env
-    WebUI --> FastAPI
-    APIClient --> FastAPI
-    FastAPI --> BrowserOps
-    FastAPI --> StreamProxy
-    BrowserOps --> Camoufox --> AIStudio
-    StreamProxy --> AIStudio
+> 🤖 = AI 模式专用 &nbsp;&nbsp; ⚡ = 可选增强
+
+---
+
+## 🛡️ 核心设计原则
+
+### 物理隔离矩阵
+
+每个微信公众号完全独立运行，零交叉污染：
+
+```
+sucai/
+├── 账号A/            ← Runner 1 专属
+│   ├── topics.yaml
+│   ├── *.csv
+│   └── covers/
+├── 账号B/            ← Runner 2 专属
+│   ├── topics.yaml
+│   └── ...
 ```
 
----
+### 断点续传 + 5h 超时保护
 
-## 运行模式
-
-| 命令 | 说明 | 场景 |
-| --- | --- | --- |
-| `python launch_camoufox.py --headless` | 无头模式 | 日常使用、服务器 |
-| `python launch_camoufox.py --debug` | 调试模式 | 首次认证、故障排查 |
-| `python launch_camoufox.py --virtual-display` | 虚拟显示 | Linux 无 GUI 环境 |
-
----
-
-## ⚙️ 配置
-
-项目使用 `.env` 统一配置管理：
-
-```bash
-cp .env.example .env
+```
+Script Start → 发布文章 → 检查时间 → 超过 5h?
+                  ↑                      │
+                  │         否 ←─────────┘
+                  │         是 → 保存进度 → trigger_next=true
+                  │                          ↓
+                  └──── GitHub Actions 自动触发下一轮 ──┘
 ```
 
-核心配置示例：
+### 反检测策略
 
-| 配置 | 默认值 | 说明 |
-| --- | --- | --- |
-| `PORT` | `2048` | 主 API 端口 |
-| `STREAM_PORT` | `3120` | 流式代理端口（`0` 关闭） |
-| `UNIFIED_PROXY_CONFIG` | 空 | HTTP/HTTPS 代理 |
-| `AUTO_ROTATE_AUTH_PROFILE` | `true` | 认证自动轮转 |
-| `FUNCTION_CALLING_MODE` | `auto` | 函数调用模式 |
-
-详细项见：[配置参考](docs/configuration-reference.md)
-
-> 说明：配置默认值以 `.env.example` 为准；少数配置存在代码兜底默认值，详见配置参考中的说明。
+- **Camoufox** 浏览器（反指纹检测）
+- 随机化的鼠标移动与点击延迟
+- 人类行为模拟（渐进式输入、自然停顿）
+- 每篇文章间插入 3-8 分钟随机等待
 
 ---
 
-## 📚 文档
-
-- [文档总览](docs/README.md)
-- [快速开始](docs/quick-start.md)
-- [部署与运维指南](docs/deployment-and-operations.md)
-- [API 使用说明](docs/api-usage.md)
-- [函数调用模式](docs/function-calling.md)
-- [认证轮转与 Cookie 刷新](docs/auth-rotation-cookie-refresh.md)
-- [排障指南](docs/troubleshooting.md)
-- [开发、测试与发布](docs/development-and-release.md)
-- [多实例 Docker 管理器](scripts/multi-instance-manager/README.md)
-
----
-
-## 客户端配置示例
-
-以 Open WebUI 为例：
-
-1. 进入设置 -> 连接
-2. API Base URL 填 `http://127.0.0.1:2048/v1`
-3. 若你未配置 API Keys，可留空或填任意字符；若已配置，请填写有效 Key
-4. 保存后即可对话
-
----
-
-## 开发检查
+## ⚡ 常用命令速查
 
 ```bash
-poetry run ruff check .
-poetry run pyright
-poetry run pytest
-```
+# ─── 微信自动化 ──────────────────────────────
+poetry run python scripts/wechat/matrix_auth.py          # 凭证管理
+poetry run python scripts/wechat/article_generator.py "主题"  # AI 生成文章
+poetry run python scripts/wechat/publish_ai_articles.py   # AI 全自动发布
+poetry run python scripts/wechat/publish_batch_scheduled.py   # CSV 批量发布
 
-前端构建：
+# ─── AI Studio Proxy ────────────────────────
+poetry run python launch_camoufox.py --debug              # 调试模式 (首次认证)
+poetry run python launch_camoufox.py --headless            # 无头模式 (日常)
+curl http://127.0.0.1:2048/v1/models                      # 查看模型列表
 
-```bash
-cd static/frontend
-npm ci
-npm run build
+# ─── 开发工具 ────────────────────────────────
+poetry run ruff check .                                    # 代码检查
+poetry run pyright                                         # 类型检查
+poetry run pytest                                          # 运行测试
 ```
 
 ---
 
-## 致谢
+## 🔧 上游 Proxy API 功能
 
-- **项目发起与主要开发**: [@CJackHwang](https://github.com/CJackHwang)
-- **核心维护**（架构重构、测试体系）: [@NikkeTryHard](https://github.com/NikkeTryHard)
-- **功能完善、页面操作优化**: [@ayuayue](https://github.com/ayuayue)
-- **实时流式功能优化**: [@luispater](https://github.com/luispater)
-- **项目重构贡献**: [@yattin](https://github.com/yattin)（Holt）
-- **下游维护分支致谢作者**: [@MasuRii](https://github.com/MasuRii)
-- **社区支持**: [Linux.do 社区](https://linux.do/)
+本项目保留了 [AIstudioProxyAPI](https://github.com/CJackHwang/AIstudioProxyAPI) 的全部能力：
 
-## License
+- **OpenAI 兼容 API**：`/v1/chat/completions`、`/v1/models`
+- **函数调用三模式**：`auto` / `native` / `emulated`
+- **认证轮转与 Cookie 刷新**：profile 自动轮转、周期刷新
+- **内置 Web UI**：访问 `http://127.0.0.1:2048/` 使用
+- **多实例 Docker 管理**：见 `scripts/multi-instance-manager/`
+
+配置详见 [.env.example](.env.example) 和 [docs/](docs/)。
+
+---
+
+## 🗺️ 数据流全景
+
+```
+                    ┌──────────────────────────────────────────┐
+                    │            GitHub Actions                 │
+                    │                                          │
+  matrix_auth.py    │   ┌─────────┐   ┌──────────────────┐    │
+  (本地扫码) ───────►│   │ Secrets │──►│ setup_cliproxy   │    │
+                    │   └─────────┘   │ 下载二进制        │    │
+                    │                 │ 生成 config.yaml   │    │
+                    │                 └────────┬───────────┘    │
+                    │                          │               │
+                    │                 ┌────────▼───────────┐    │
+                    │                 │ CLIProxyAPI :8317  │    │
+                    │                 │ (Go 代理服务)      │◄──►│ Gemini API
+                    │                 └────────┬───────────┘    │
+                    │                          │               │
+                    │                 ┌────────▼───────────┐    │
+                    │                 │ article_generator  │    │
+  topics.yaml ─────►│                 │ AI 创作文章        │    │
+                    │                 └────────┬───────────┘    │
+                    │                          │               │
+                    │   ┌──────────┐  ┌────────▼───────────┐    │
+                    │   │ 封面图   │◄─│ publish_ai_articles│    │
+                    │   │ 自动生成 │  │ 端到端流水线       │    │
+                    │   └──────────┘  └────────┬───────────┘    │
+                    │                          │               │
+                    │                 ┌────────▼───────────┐    │
+                    │                 │ WeChatPublisher    │    │
+                    │                 │ Playwright 自动化  │───►│ 微信公众号
+                    │                 └────────────────────┘    │
+                    │                                          │
+                    │   status.csv ← Git Push ← 状态追踪       │
+                    └──────────────────────────────────────────┘
+```
+
+---
+
+## 📄 License
 
 [AGPLv3](LICENSE)
 
-## 支持作者
+## 致谢
 
-如果本项目对你有帮助，欢迎支持作者持续开发：
-
-![支持作者](./支持作者.jpg)
+- 上游项目：[AIstudioProxyAPI](https://github.com/CJackHwang/AIstudioProxyAPI) by [@CJackHwang](https://github.com/CJackHwang)
+- AI 代理：[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
+- 反指纹浏览器：[Camoufox](https://github.com/nichochar/camoufox)
+- 自动化框架：[Playwright](https://playwright.dev/)
