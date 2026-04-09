@@ -38,6 +38,7 @@ class WeChatBrowser:
 
     def __init__(self):
         self._playwright = None
+        self._camoufox = None
         self._browser = None
         self._context = None
         self._page = None
@@ -76,11 +77,27 @@ class WeChatBrowser:
             headless = WECHAT_HEADLESS
 
         try:
-            from playwright.async_api import async_playwright
-
-            logger.info(f"🚀 Launching WeChat browser (headless={headless})...")
-
-            self._playwright = await async_playwright().start()
+            # 共用 AI Studio 底层操作逻辑：支持直连统一的 Camoufox CDP 端口 以及 统一网络代理
+            ws_endpoint = os.environ.get("CAMOUFOX_WS_ENDPOINT")
+            
+            if ws_endpoint:
+                from playwright.async_api import async_playwright
+                logger.info(f"🔗 共用 AI Studio 底层逻辑: 通过 CDP 连接到共享 Camoufox 节点 ({ws_endpoint})...")
+                # 必须先启动 playwright 引擎来承载 CDP 连接
+                if not getattr(self, '_playwright', None):
+                    self._playwright = await async_playwright().start()
+                self._browser = await self._playwright.firefox.connect(ws_endpoint, timeout=30000)
+            else:
+                from camoufox.async_api import AsyncCamoufox
+                logger.info(f"🚀 启动独立的本地 Camoufox 实例运行微信自动化 (headless={headless})...")
+                self._camoufox = AsyncCamoufox(
+                    headless=headless,
+                    enable_cache=True,
+                    window_size=(1440, 900),
+                    humanize=True,
+                    geoip=True
+                )
+                self._browser = await self._camoufox.start()
 
             # Try loading existing auth state
             storage_state = None
@@ -96,39 +113,21 @@ class WeChatBrowser:
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning(f"Failed to load auth state: {e}")
 
-            # Launch Chromium (WeChat backend works best with Chromium)
-            self._browser = await self._playwright.chromium.launch(
-                headless=headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                ],
-            )
-
             # Create context with optional saved state
             context_kwargs = {
-                "viewport": {"width": 1440, "height": 900},
-                "user_agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                ),
                 "locale": "zh-CN",
                 "timezone_id": "Asia/Shanghai",
             }
             if storage_state:
                 context_kwargs["storage_state"] = storage_state
 
-            self._context = await self._browser.new_context(**context_kwargs)
+            # 共用 AI Studio 统一代理逻辑
+            unified_proxy = os.environ.get("UNIFIED_PROXY_CONFIG") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+            if unified_proxy:
+                context_kwargs["proxy"] = {"server": unified_proxy}
+                logger.info(f"🌐 共用 AI Studio 代理配置: {unified_proxy}")
 
-            # Inject anti-detection scripts
-            await self._context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-                // Override chrome detection
-                window.chrome = { runtime: {} };
-            """)
+            self._context = await self._browser.new_context(**context_kwargs)
 
             self._page = await self._context.new_page()
             logger.info("✅ WeChat browser launched successfully")
@@ -302,7 +301,7 @@ class WeChatBrowser:
                 await self._context.close()
             if self._browser:
                 await self._browser.close()
-            if self._playwright:
+            if hasattr(self, '_playwright') and self._playwright:
                 await self._playwright.stop()
             logger.info("🔒 WeChat browser closed")
         except Exception as e:
@@ -311,6 +310,7 @@ class WeChatBrowser:
             self._page = None
             self._context = None
             self._browser = None
+            self._camoufox = None
             self._playwright = None
             self._is_logged_in = False
             self._token = None

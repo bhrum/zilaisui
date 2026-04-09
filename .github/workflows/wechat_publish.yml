@@ -4,65 +4,99 @@ on:
   workflow_dispatch:
 
 jobs:
-  publish:
+  setup-matrix:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Extract Matrix Secrets
+        id: set-matrix
+        run: |
+          MAP_FILE="scripts/wechat/wechat_accounts_map.json"
+          if [ -f "$MAP_FILE" ]; then
+            # Use jq to get all values (the account IDs like ACC_XXXX) and dump them into a JSON array string
+            MATRIX_JSON=$(jq -c 'values' $MAP_FILE)
+            if [ "$MATRIX_JSON" == "[]" ] || [ -z "$MATRIX_JSON" ]; then
+               echo "Warning: Account map is empty. Creating a dummy default block."
+               MATRIX_JSON='["DEFAULT_NULL_ACC"]'
+            fi
+            echo "matrix=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
+            echo "Distributed Cloud Matrix allocated: $MATRIX_JSON"
+          else
+            echo "Account map not found! Please run matrix_auth.py to create one first."
+            exit 1
+          fi
+
+  publish:
+    needs: setup-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # Extremely important: if one account fails or gets banned, keep others publishing!
+      max-parallel: 10
+      matrix:
+        account_id: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
+        
     permissions:
-      contents: write # Needed to commit the modified CSV back to the repo
-      actions: write  # Needed to trigger next workflow
+      contents: write 
+      actions: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Need full history to avoid rebase merge conflicts
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
+      - name: Configure Git for Distributed Concurrency
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git config --global pull.rebase true
+
       - name: Install dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          # Install Noto CJK fonts for image generation (cover images)
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends fonts-noto-cjk
-          
-          # Install Poetry
           pip install poetry
-          
-          # Install project dependencies
           poetry install
 
       - name: Install Playwright Browsers
-        run: poetry run playwright install chromium
+        run: poetry run playwright install chromium firefox
 
-      - name: Run WeChat Publisher
+      - name: Run Dedicated WeChat Publisher Node
         id: publisher
         env:
-          WECHAT_AUTH_STATE_JSON: ${{ secrets.WECHAT_AUTH_STATE_JSON }}
+           # pass matrix current account parameter so python knows which segment to target
+          TARGET_ACCOUNT_ID: ${{ matrix.account_id }} 
+           # Fetch actual auth token securely belonging strictly to this virtual node
+          WECHAT_AUTH_STATE_JSON: ${{ secrets[format('WECHAT_AUTH_STATE_JSON_{0}', matrix.account_id)] }}
           WECHAT_HEADLESS: "true"
           MAX_PUBLISH_COUNT: "50"
-          CSV_FILE_PATH: "sucai/梵文陀罗尼音译结果(全部) (3).csv"
         run: |
-          # Run the batch scheduled publishing script
-          poetry run python publish_batch_scheduled.py
+          poetry run python scripts/wechat/publish_batch_scheduled.py
 
-      - name: Commit and push updated CSV
-        if: always() # Make sure to commit even if the script failed halfway
+      - name: Final Integrity Check and Push
+        if: always() 
         run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          # Even though Python pushes sequentially, do one final sweep
           git add "sucai"
-          # Only commit if there are changes
-          git diff --staged --quiet || git commit -m "chore: update publish status via GitHub Actions"
-          
-          # Always try to push, because the Python script might have committed locally without pushing successfully due to errors
-          git push origin HEAD:main || echo "Push failed (maybe nothing to push or permission error)"
+          git diff --staged --quiet || git commit -m "chore: flush final status for Node ${{ matrix.account_id }}"
+          git pull --rebase origin main || echo "No rebase needed"
+          git push origin HEAD:main || echo "Final push bypassed"
 
-      - name: Trigger next action
+      - name: Trigger Follow-up Spin (Continuous Loop Check)
         if: steps.publisher.outputs.trigger_next == 'true'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          echo "Tasks are not fully completed yet. Automatically triggering the next action loop..."
+          echo "Queue not fully flushed yet for matrix pool. Re-triggering cluster payload..."
           gh workflow run wechat_publish.yml
