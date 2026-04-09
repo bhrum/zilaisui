@@ -157,7 +157,38 @@ poetry run python scripts/wechat/publish_ai_articles.py
 poetry run python scripts/wechat/publish_batch_scheduled.py
 ```
 
-或通过 **GitHub Actions** 一键触发：`Actions` → `WeChat AI Article Publish` → `Run workflow`
+或通过 **GitHub Actions** 一键触发（见下方工作流说明）。
+
+---
+
+## 🔄 GitHub Actions 工作流
+
+本项目提供 **两个** 独立的微信发布工作流，均通过 `workflow_dispatch` 手动触发：
+
+### ① WeChat AI Article Publish — AI 自动创作+发布
+
+> `Actions` → **WeChat AI Article Publish** → `Run workflow`
+
+- 启动 CLIProxyAPI 代理服务 → 调用 Gemini/Claude 生成文章 → 自动发布
+- 可在触发时选择 AI 模型（`gemini-2.5-flash` / `gemini-2.5-pro` / `claude-sonnet-4`）
+- 可设置最大发文数量
+- 主题从 `topics.yaml` 或 `AI_ARTICLE_TOPICS` Secret 读取
+
+### ② WeChat Batch Publish — CSV 批量定时发布
+
+> `Actions` → **WeChat Batch Publish** → `Run workflow`
+
+- 读取 `sucai/<账号名>/*.csv` 中预写好的文章（标题、正文、封面路径、定时时间）
+- 按 CSV 中指定的时间精确定时发布
+- 内置 5h 超时保护 + 自动接力触发下一轮
+- 支持断点续传（CSV 状态列标记已发布的文章）
+
+### 通用特性（两个工作流都具备）
+
+- ✅ **多账号矩阵并行**：基于 `wechat_accounts_map.json` 动态生成 Runner 矩阵
+- ✅ **凭证自动注入**：从 `WECHAT_AUTH_STATE_JSON_ACC_*` Secrets 恢复登录态
+- ✅ **Git 状态同步**：每篇发布后自动 commit + push 进度
+- ✅ **接力触发**：超时未完成时自动触发下一个 workflow run
 
 ---
 
@@ -165,11 +196,12 @@ poetry run python scripts/wechat/publish_batch_scheduled.py
 
 | 特性 | AI 自动创作模式 | CSV 批量发布模式 |
 |------|:--------------:|:--------------:|
+| GitHub Action | **WeChat AI Article Publish** | **WeChat Batch Publish** |
 | 入口脚本 | `publish_ai_articles.py` | `publish_batch_scheduled.py` |
 | 内容来源 | AI 实时生成 (Gemini/Claude) | CSV 预写好的 Markdown |
-| 封面图 | 自动生成 | CSV 指定路径 |
+| 封面图 | 自动生成 (标题 → 900×383) | CSV 指定路径 |
 | 定时策略 | 自动均匀分布 (一周内) | CSV 中指定时间 |
-| CI Workflow | `wechat_ai_publish.yml` | `wechat_publish.yml` |
+| 额外依赖 | CLIProxyAPI + Gemini API Key | 无 |
 | 适用场景 | 大批量内容矩阵运营 | 精品内容精确定时发布 |
 
 ---
