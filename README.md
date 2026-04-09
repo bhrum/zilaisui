@@ -78,19 +78,23 @@ AIstudioProxyAPI/
 │   └── utils/
 │       └── image_generator.py  # 文章封面图自动生成 (900×383)
 │
-├── 🤖 AI 创作 + 自动化脚本
+├── 🤖 自动化脚本 + AI 创作
 │   └── scripts/wechat/
+│       ├── publish_batch_scheduled.py # 统一发布引擎 (CSV + AI 自动创作)
 │       ├── article_generator.py     # AI 文章生成器 (OpenAI SDK)
 │       ├── setup_cliproxy.py        # CLIProxyAPI 服务管理器
-│       ├── publish_ai_articles.py   # AI 创作+发布 全流水线
-│       ├── publish_batch_scheduled.py # CSV 批量定时发布
 │       ├── matrix_auth.py           # 多账号凭证管理 + Secrets 同步
 │       └── probe_publish_modal.py   # 发布弹窗探测工具
 │
+├── 📁 素材目录 (按账号隔离)
+│   └── sucai/<账号名>/
+│       ├── *.csv                    # 待发布文章 (标题/正文/状态)
+│       ├── persona.md               # 账号人设文档 (AI 自动创作依据)
+│       └── covers/                  # 封面图
+│
 ├── 🔄 CI/CD 工作流
 │   └── .github/workflows/
-│       ├── wechat_ai_publish.yml    # AI 创作+发布 (手动触发)
-│       ├── wechat_publish.yml       # CSV 批量发布 (手动触发)
+│       ├── wechat_publish.yml       # 统一发布 (CSV + AI, 手动触发)
 │       ├── pr-check.yml             # PR 自动检查
 │       ├── release.yml              # 版本发布
 │       └── upstream-sync.yml        # 上游同步
@@ -147,62 +151,71 @@ topics:
 ### 4️⃣ 运行
 
 ```bash
+# 统一发布（CSV 优先 → AI 自动创作兜底）
+poetry run python scripts/wechat/publish_batch_scheduled.py
+
 # 仅测试 AI 文章生成（不发布）
 poetry run python scripts/wechat/article_generator.py "你的主题"
-
-# 完整流程：AI 创作 → 生成封面 → 定时发布到微信
-poetry run python scripts/wechat/publish_ai_articles.py
-
-# CSV 批量发布（使用预写好的文章）
-poetry run python scripts/wechat/publish_batch_scheduled.py
 ```
 
-或通过 **GitHub Actions** 一键触发（见下方工作流说明）。
+或通过 **GitHub Actions** 一键触发：`Actions` → `WeChat Publish (CSV + AI)` → `Run workflow`
 
 ---
 
-## 🔄 GitHub Actions 工作流
+## 🔄 统一发布引擎 — 一个 Action 搞定一切
 
-本项目提供 **两个** 独立的微信发布工作流，均通过 `workflow_dispatch` 手动触发：
+> `Actions` → **WeChat Publish (CSV + AI)** → `Run workflow`
 
-### ① WeChat AI Article Publish — AI 自动创作+发布
+只有 **一个工作流、一个脚本**，智能切换两种模式：
 
-> `Actions` → **WeChat AI Article Publish** → `Run workflow`
+```
+┌─────────────────────────────────────────────┐
+│  publish_batch_scheduled.py 统一发布引擎     │
+│                                             │
+│  1. 扫描 CSV → 有未发布的文章？              │
+│     ├── YES → 按批量模式逐篇定时发布          │
+│     └── NO  → 检查 persona.md 人设文档        │
+│               ├── 有 → AI 生成文章 → 写入 CSV │
+│               │       → 按同样节奏发布         │
+│               └── 无 → 退出                   │
+│                                             │
+│  2. 超时 5h → 保存进度 → 触发下一轮接力       │
+│  3. persona.md 存在 → 永续循环自动创作        │
+└─────────────────────────────────────────────┘
+```
 
-- 启动 CLIProxyAPI 代理服务 → 调用 Gemini/Claude 生成文章 → 自动发布
-- 可在触发时选择 AI 模型（`gemini-2.5-flash` / `gemini-2.5-pro` / `claude-sonnet-4`）
-- 可设置最大发文数量
-- 主题从 `topics.yaml` 或 `AI_ARTICLE_TOPICS` Secret 读取
+### 核心特性
 
-### ② WeChat Batch Publish — CSV 批量定时发布
-
-> `Actions` → **WeChat Batch Publish** → `Run workflow`
-
-- 读取 `sucai/<账号名>/*.csv` 中预写好的文章（标题、正文、封面路径、定时时间）
-- 按 CSV 中指定的时间精确定时发布
-- 内置 5h 超时保护 + 自动接力触发下一轮
-- 支持断点续传（CSV 状态列标记已发布的文章）
-
-### 通用特性（两个工作流都具备）
-
+- ✅ **CSV 优先**：有手动写好的文章就先发，绝不浪费人工内容
+- ✅ **AI 兜底**：CSV 发完后自动根据 `persona.md` 人设文档创作新文章
+- ✅ **统一节奏**：AI 生成的文章写入 CSV，走完全一样的定时发布流水线
+- ✅ **永续运行**：只要 `persona.md` 存在，每轮发完自动触发下一轮 AI 创作
 - ✅ **多账号矩阵并行**：基于 `wechat_accounts_map.json` 动态生成 Runner 矩阵
-- ✅ **凭证自动注入**：从 `WECHAT_AUTH_STATE_JSON_ACC_*` Secrets 恢复登录态
-- ✅ **Git 状态同步**：每篇发布后自动 commit + push 进度
-- ✅ **接力触发**：超时未完成时自动触发下一个 workflow run
+- ✅ **断点续传**：CSV 状态列标记已发布文章，接力轮自动跳过
 
+### persona.md — 账号人设文档
+
+每个账号的 `sucai/<账号名>/persona.md` 定义了 AI 的创作规范：
+
+```markdown
+---
+topics:
+  - 人工智能在教育中的应用
+  - 量子计算入门指南
+batch_size: 5
 ---
 
-## 📋 两种发布模式对比
+# 公众号人设与创作规范
 
-| 特性 | AI 自动创作模式 | CSV 批量发布模式 |
-|------|:--------------:|:--------------:|
-| GitHub Action | **WeChat AI Article Publish** | **WeChat Batch Publish** |
-| 入口脚本 | `publish_ai_articles.py` | `publish_batch_scheduled.py` |
-| 内容来源 | AI 实时生成 (Gemini/Claude) | CSV 预写好的 Markdown |
-| 封面图 | 自动生成 (标题 → 900×383) | CSV 指定路径 |
-| 定时策略 | 自动均匀分布 (一周内) | CSV 中指定时间 |
-| 额外依赖 | CLIProxyAPI + Gemini API Key | 无 |
-| 适用场景 | 大批量内容矩阵运营 | 精品内容精确定时发布 |
+你是「XXX」公众号的主笔编辑，专注于科技与生活领域...
+
+## 写作风格
+- 语气：专业但亲切
+- 长度：800-1500 字
+...
+```
+
+> 📋 完整模板见 `sucai/persona_template.md`
 
 ---
 
@@ -263,9 +276,8 @@ Script Start → 发布文章 → 检查时间 → 超过 5h?
 ```bash
 # ─── 微信自动化 ──────────────────────────────
 poetry run python scripts/wechat/matrix_auth.py          # 凭证管理
-poetry run python scripts/wechat/article_generator.py "主题"  # AI 生成文章
-poetry run python scripts/wechat/publish_ai_articles.py   # AI 全自动发布
-poetry run python scripts/wechat/publish_batch_scheduled.py   # CSV 批量发布
+poetry run python scripts/wechat/publish_batch_scheduled.py   # 统一发布 (CSV + AI)
+poetry run python scripts/wechat/article_generator.py "主题"  # 仅测试 AI 生成
 
 # ─── AI Studio Proxy ────────────────────────
 poetry run python launch_camoufox.py --debug              # 调试模式 (首次认证)

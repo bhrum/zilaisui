@@ -1,7 +1,28 @@
-name: WeChat Batch Publish
+name: WeChat Publish (CSV + AI)
 
 on:
   workflow_dispatch:
+    inputs:
+      model:
+        description: 'AI 模型 (仅在 AI 自动创作模式生效)'
+        required: false
+        default: 'gemini-2.5-flash'
+        type: choice
+        options:
+          - gemini-2.5-flash
+          - gemini-2.5-pro
+          - gemini-3-pro-preview
+          - claude-sonnet-4
+      ai_batch_size:
+        description: 'AI 每轮生成文章数 (仅在 AI 模式生效)'
+        required: false
+        default: '5'
+        type: string
+      max_publish:
+        description: '本轮最大发布数'
+        required: false
+        default: '50'
+        type: string
 
 jobs:
   setup-matrix:
@@ -11,22 +32,21 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
+
       - name: Extract Matrix Secrets
         id: set-matrix
         run: |
           MAP_FILE="scripts/wechat/wechat_accounts_map.json"
           if [ -f "$MAP_FILE" ]; then
-            # Use jq to get all values (the account IDs like ACC_XXXX) and dump them into a JSON array string
             MATRIX_JSON=$(jq -c 'values' $MAP_FILE)
             if [ "$MATRIX_JSON" == "[]" ] || [ -z "$MATRIX_JSON" ]; then
-               echo "Warning: Account map is empty. Creating a dummy default block."
+               echo "Warning: Account map is empty. Using default."
                MATRIX_JSON='["DEFAULT_NULL_ACC"]'
             fi
             echo "matrix=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
-            echo "Distributed Cloud Matrix allocated: $MATRIX_JSON"
+            echo "Matrix allocated: $MATRIX_JSON"
           else
-            echo "Account map not found! Please run matrix_auth.py to create one first."
+            echo "Account map not found! Please run matrix_auth.py first."
             exit 1
           fi
 
@@ -34,27 +54,27 @@ jobs:
     needs: setup-matrix
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false # Extremely important: if one account fails or gets banned, keep others publishing!
+      fail-fast: false
       max-parallel: 10
       matrix:
         account_id: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
-        
+
     permissions:
-      contents: write 
+      contents: write
       actions: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Need full history to avoid rebase merge conflicts
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Configure Git for Distributed Concurrency
+      - name: Configure Git
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
@@ -72,31 +92,48 @@ jobs:
       - name: Install Playwright Browsers
         run: poetry run playwright install chromium firefox
 
-      - name: Run Dedicated WeChat Publisher Node
+      - name: Cache CLIProxyAPI Binary
+        uses: actions/cache@v4
+        with:
+          path: .cliproxy_bin
+          key: cliproxy-${{ runner.os }}-${{ runner.arch }}
+          restore-keys: |
+            cliproxy-${{ runner.os }}-
+
+      - name: Run Unified Publisher
         id: publisher
         env:
-           # pass matrix current account parameter so python knows which segment to target
-          TARGET_ACCOUNT_ID: ${{ matrix.account_id }} 
-           # Fetch actual auth token securely belonging strictly to this virtual node
+          # ─── 矩阵账号参数 ───
+          TARGET_ACCOUNT_ID: ${{ matrix.account_id }}
           WECHAT_AUTH_STATE_JSON: ${{ secrets[format('WECHAT_AUTH_STATE_JSON_{0}', matrix.account_id)] }}
           WECHAT_HEADLESS: "true"
-          MAX_PUBLISH_COUNT: "50"
+          MAX_PUBLISH_COUNT: ${{ inputs.max_publish || '50' }}
+          WECHAT_DEFAULT_AUTHOR: "bhrum"
+          # ─── AI 创作参数 (仅 CSV 清空后触发) ───
+          CPA_API_KEY: ${{ secrets.CPA_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CPA_MODEL: ${{ inputs.model || 'gemini-2.5-flash' }}
+          AI_BATCH_SIZE: ${{ inputs.ai_batch_size || '5' }}
+          OPENAI_COMPAT_BASE_URL: ${{ secrets.OPENAI_COMPAT_BASE_URL }}
+          OPENAI_COMPAT_API_KEY: ${{ secrets.OPENAI_COMPAT_API_KEY }}
         run: |
           poetry run python scripts/wechat/publish_batch_scheduled.py
 
-      - name: Final Integrity Check and Push
-        if: always() 
+      - name: Final Status Push
+        if: always()
         run: |
-          # Even though Python pushes sequentially, do one final sweep
           git add "sucai"
-          git diff --staged --quiet || git commit -m "chore: flush final status for Node ${{ matrix.account_id }}"
+          git diff --staged --quiet || git commit -m "chore: final status for Node ${{ matrix.account_id }}"
           git pull --rebase origin main || echo "No rebase needed"
           git push origin HEAD:main || echo "Final push bypassed"
 
-      - name: Trigger Follow-up Spin (Continuous Loop Check)
+      - name: Trigger Follow-up Run
         if: steps.publisher.outputs.trigger_next == 'true'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          echo "Queue not fully flushed yet for matrix pool. Re-triggering cluster payload..."
-          gh workflow run wechat_publish.yml
+          echo "Queue not fully processed or AI mode active. Re-triggering..."
+          gh workflow run wechat_publish.yml \
+            -f model=${{ inputs.model || 'gemini-2.5-flash' }} \
+            -f ai_batch_size=${{ inputs.ai_batch_size || '5' }} \
+            -f max_publish=${{ inputs.max_publish || '50' }}
