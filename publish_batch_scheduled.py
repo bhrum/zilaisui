@@ -151,14 +151,30 @@ async def main():
         # 自动生成封面
         cover_path = generate_cover_image(title)
         
-        result = await publisher.publish_article(
-            title=title,
-            content_markdown=content_markdown,
-            author="bhrum",
-            mode="schedule",  # 定时模式
-            cover_image_path=cover_path,
-            publish_time=publish_time
-        )
+        # 动态计算剩余安全时间 (Github Action 限定 6 小时，预留半小时以保证清理和推送能完成)
+        elapsed = time.time() - script_start_time
+        max_total_seconds = 5.5 * 3600
+        time_left = max_total_seconds - elapsed
+        
+        if time_left <= 0:
+            print("\n✋ 运行时间已触及 5.5 小时强制防线，提前结束循环。")
+            break
+            
+        try:
+            result = await asyncio.wait_for(
+                publisher.publish_article(
+                    title=title,
+                    content_markdown=content_markdown,
+                    author="bhrum",
+                    mode="schedule",  # 定时模式
+                    cover_image_path=cover_path,
+                    publish_time=publish_time
+                ),
+                timeout=time_left
+            )
+        except asyncio.TimeoutError:
+            print(f"\n✋ [Timeout] 当前文章发表操作超时 (在总运行时限 5.5h 内未能完成)，强制终止以保留最后的环境清理和后续Action触发时间。")
+            break
         
         if result.get("success"):
             print(f"  ✅ 成功定时发表该图文！")
